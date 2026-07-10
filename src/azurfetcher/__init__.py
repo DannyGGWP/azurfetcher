@@ -7,8 +7,7 @@ from pathlib import Path
 from platformdirs import user_cache_dir
 import questionary
 import click
-import tomlkit
-
+from term_image.image import from_file, from_url, Size
 
 # globals
 APP_NAME = "azur_fetcher"
@@ -29,10 +28,10 @@ def get_config_path() -> Path:
 def write_default_conf(path: Path):
 
     if path.exists():
-        ans = click.prompt(
-            f"Config File exists in {str(path)}! \nOverwrite? y/n", default="n"
-        )
-        if ans == "n":
+        ans = questionary.confirm(
+            f"Config File exists in {str(path)}! \nOverwrite? y/n"
+        ).ask()
+        if not ans:
             return
 
     doc = tomlkit.document()
@@ -59,14 +58,13 @@ def write_default_conf(path: Path):
     whitelist.add("ships", [])
     whitelist["ships"].comment("Ship name to use for random selection")
     whitelist.add("skins", [])
-    whitelist["skins"].comment(
-        "Skin GIDs to use for random selection, Can work in conjunction with white list."
-    )
+    whitelist["skins"].comment("Skin GIDs to use for random selection. Not use in V1.0")
     doc.add("whitelist", whitelist)
 
     doc.add(tomlkit.nl())
 
     blacklist = tomlkit.table()
+    blacklist.comment("Not Used as of V0.1")
     blacklist.add("ships", [])
 
     blacklist.add("skins", [])
@@ -134,10 +132,6 @@ def load_ship_json_file() -> dict:
     return ship_dict
 
 
-def display_image(image_data):
-    print(f"\033_Ga=T,f=100;{image_data}\033\\")
-
-
 def download_image(path: Path, url: str):
     with requests.get(url, stream=True) as resp:
         resp.raise_for_status()
@@ -187,6 +181,7 @@ def grab_ship(ship, picture_type, display):
         return
 
     ship_list = load_ship_json_file()
+    # Grab a ship from the whitelist if this is random and the whitelist has entries
     if ship == "random" and CONFIG["whitelist"]["ships"] is not None:
         ship = random.choice(CONFIG["whitelist"]["ships"])
     elif ship == "random":
@@ -216,22 +211,12 @@ def grab_ship(ship, picture_type, display):
         if not display:
             click.echo(str(img_path))
             return
-        with open(img_path, "rb") as imf:
-            img_data = base64.b64encode(imf.read()).decode("ascii")
-            display_image(img_data)
-    else:
-        resp = requests.get(ship_skin[picture_type])
-        if resp.status_code == 200:
-            image_data = base64.b64encode(resp.content).decode("ascii")
-            display_image(image_data)
         else:
-            click.echo(
-                click.style(
-                    f"Error fetching Ship: {ship}",
-                    fg="red",
-                ),
-                err=True,
-            )
+            img = from_file(img_path, width=Size.FIT)
+            img.draw()
+
+    if display:
+        img = from_url(ship_skin[picture_type])
 
 
 def add_blacklist():
@@ -242,7 +227,11 @@ def add_blacklist():
     ship_json = load_ship_json_file()
     ship_choices = list(ship_json.keys())
     ship_name = questionary.autocomplete(
-        "Select a Ship to add to the blacklist: ", choices=ship_choices
+        "Select a Ship to add to the blacklist: ",
+        choices=ship_choices,
+        validate=lambda choice: (
+            True if choice in ship_choices else "Please Enter a Full ship Name"
+        ),
     ).ask()
     if ship_name:
         click.echo(
@@ -253,18 +242,65 @@ def add_blacklist():
         CONFIG["blacklist"]["ships"].append(ship_name)
         write_config(CONFIG)
         click.echo(f"Black List Updated: {CONFIG['blacklist']['ships']}")
+        repeat = questionary.confirm("Would you like to add another ship?").ask()
+        if repeat:
+            add_blacklist()
 
 
 def add_whitelist():
     ship_json = load_ship_json_file()
     ship_choices = list(ship_json.keys())
     ship_name = questionary.autocomplete(
-        "Select a Ship to add to the whitelist: ", choices=ship_choices
+        "Select a Ship to add to the whitelist: ",
+        choices=ship_choices,
+        validate=lambda choice: (
+            True if choice in ship_choices else "Please Enter a Full ship Name"
+        ),
     ).ask()
     if ship_name:
         CONFIG["whitelist"]["ships"].append(ship_name)
         write_config(CONFIG)
         click.echo(f"White List Updated: {CONFIG['whitelist']['ships']}")
+        repeat = questionary.confirm("Would you like to add another ship?").ask()
+        if repeat:
+            add_whitelist()
+
+
+def remove_whitelist():
+    ship_choices = CONFIG["whitelist"]["ships"]
+    if ship_choices is None:
+        click.echo("No ships on list")
+        return
+
+    ship_name = questionary.select(
+        "Select a Ship to add to remove from the whitelist: ",
+        choices=ship_choices,
+    ).ask()
+    if ship_name:
+        CONFIG["whitelist"]["ships"].remove(ship_name)
+        write_config(CONFIG)
+        click.echo(f"White List Updated: {CONFIG['whitelist']['ships']}")
+        repeat = questionary.confirm("Would you like to remove another ship?").ask()
+        if repeat:
+            remove_whitelist()
+
+
+def remove_blacklist():
+    ship_choices = CONFIG["blacklist"]["ships"]
+    if ship_choices is None or len(ship_choices) == 0:
+        click.echo("No ships on list")
+        return
+    ship_name = questionary.select(
+        "Select a Ship to add to remove from the blacklist: ",
+        choices=ship_choices,
+    ).ask()
+    if ship_name:
+        CONFIG["blacklist"]["ships"].remove(ship_name)
+        write_config(CONFIG)
+        click.echo(f"White List Updated: {CONFIG['blacklist']['ships']}")
+        repeat = questionary.confirm("Would you like to remove another ship?").ask()
+        if repeat:
+            remove_blacklist()
 
 
 @cli.command()
@@ -288,12 +324,25 @@ def add_whitelist():
     is_flag=True,
     help="add a ship to the whitelist",
 )
-def config(generate, blacklist, whitelist):
+@click.option(
+    "-r",
+    "--remove",
+    is_flag=True,
+    help="used with whitelist or blacklist flags to remove ships from the list",
+)
+@click.option("-p", "--print", is_flag=True)
+def config(generate, blacklist, whitelist, print, remove):
     if generate:
         write_default_conf(get_config_path())
 
-    if blacklist:
+    if blacklist and not remove:
         add_blacklist()
+    elif blacklist and remove:
+        remove_blacklist()
 
-    if whitelist:
+    if whitelist and not remove:
         add_whitelist()
+    elif whitelist and remove:
+        remove_whitelist()
+    if print:
+        click.echo(CONFIG)
