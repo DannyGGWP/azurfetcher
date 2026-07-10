@@ -212,11 +212,14 @@ def grab_ship(ship, picture_type, display):
             click.echo(str(img_path))
             return
         else:
-            img = from_file(img_path, width=Size.FIT)
+            img = from_file(img_path)
             img.draw()
 
     if display:
         img = from_url(ship_skin[picture_type])
+        img.draw()
+    else:
+        click.echo(ship_skin[picture_type])
 
 
 def add_blacklist():
